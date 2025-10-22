@@ -23,35 +23,38 @@
 #define ACK 4
 #define ERROR 5
 
-int tftpc_socket(const char *host, const char *service, struct sockaddr** saptr, socklen_t* lenp);
+enum tftpc_op {
+  OP_UNDEFINED,
+  OP_UPLOAD,
+  OP_DOWNLOAD
+};
+typedef enum tftpc_op tftpc_op;
+
+enum tftpc_ipv {
+  IPV_UNSPEC,
+  IPV4,
+  IPV6
+};
+typedef enum tftpc_ipv tftpc_ipv;
+
+struct tftpc_conf {
+  const char* host;
+  const char* service;
+  const char* src_file_path;
+  const char* dst_file_path;
+  const char* mode;
+  tftpc_ipv ipv;
+  tftpc_op op;
+};
+typedef struct tftpc_conf tftpc_conf;
+
+int tftpc_socket(tftpc_conf conf, struct sockaddr** saptr, socklen_t* lenp);
+tftpc_conf parse_args(int argc, char** argv);
 
 int main(int argc, char **argv) {
-  if (argc < 5) {
-    fprintf(stderr, "usage: tftpc <host> <service> <src-file-path> <dest-file-path>\n");
-    exit(EXIT_FAILURE);
-  }
+  tftpc_conf conf = parse_args(argc, argv);
 
-  const char* host = argv[1];
-  const char* service = argv[2];
-  const char* src_file_path = argv[3];
-  const char* dst_file_path = argv[4];
-  const char* mode = "octet";
-
-  int src_path_len = strlen(src_file_path);
-  if (src_path_len > MAX_PATH_LEN) {
-    fprintf(stderr,
-            "Length of source file path greater than max allowed (%d)\n", MAX_PATH_LEN);
-    exit(EXIT_FAILURE);
-  }
-
-  int dst_path_len = strlen(dst_file_path);
-  if (dst_path_len > MAX_PATH_LEN) {
-    fprintf(stderr,
-            "Length of destination file path greater than max allowed (%d)\n", MAX_PATH_LEN);
-    exit(EXIT_FAILURE);
-  }
-
-  FILE* fp = fopen(dst_file_path, "w");
+  FILE* fp = fopen(conf.dst_file_path, "w");
   if (!fp) {
     fprintf(stderr, "ERR: unable to open file - %s\n", strerror(errno));
     exit(EXIT_FAILURE);
@@ -59,7 +62,7 @@ int main(int argc, char **argv) {
 
   socklen_t salen;
   struct sockaddr* sa;
-  int sockfd = tftpc_socket(host, service, &sa, &salen);
+  int sockfd = tftpc_socket(conf, &sa, &salen);
 
   char tx_buff[1472];
   char rx_buff[1472];
@@ -69,11 +72,11 @@ int main(int argc, char **argv) {
   memcpy(tx_buff + offset, &opcode, sizeof(opcode));
   offset += sizeof(opcode);
 
-  memcpy(tx_buff + offset, src_file_path, strlen(src_file_path) + 1);
-  offset += strlen(src_file_path) + 1;
+  memcpy(tx_buff + offset, conf.src_file_path, strlen(conf.src_file_path) + 1);
+  offset += strlen(conf.src_file_path) + 1;
 
-  memcpy(tx_buff + offset, mode, strlen(mode) + 1);
-  offset += strlen(mode) + 1;
+  memcpy(tx_buff + offset, conf.mode, strlen(conf.mode) + 1);
+  offset += strlen(conf.mode) + 1;
 
   sendto(sockfd, tx_buff, offset, 0, sa, salen);
 
@@ -125,13 +128,120 @@ int main(int argc, char **argv) {
   }
 }
 
-int tftpc_socket(const char *host, const char *service, struct sockaddr** saptr, socklen_t* lenp) {
+tftpc_conf parse_args(int argc, char** argv) {
+  tftpc_conf conf = {
+    .host = nullptr,
+    .service = "tftp",
+    .src_file_path = nullptr,
+    .dst_file_path = nullptr,
+    .mode = "octet",
+    .ipv = IPV_UNSPEC,
+    .op = OP_UNDEFINED
+  };
+
+
+  int opt;
+  while ((opt = getopt(argc, argv, "h:p:s:d:a46rw")) != -1) {
+    switch (opt) {
+      case 'h':
+        conf.host = optarg; break;
+      case 'p':
+        conf.service = optarg; break;
+      case 's':
+        conf.src_file_path = optarg; break;
+      case 'd':
+        conf.dst_file_path = optarg; break;
+      case 'a':
+        conf.mode = "netascii"; break;
+      case '4':
+        if (conf.ipv != IPV_UNSPEC) {
+          fprintf(stderr, "ERR: cannot specify -4 and -6\n");
+          exit(EXIT_FAILURE);
+        }
+        conf.ipv = IPV4;
+        break;
+      case '6':
+        if (conf.ipv != IPV_UNSPEC) {
+          fprintf(stderr, "ERR: cannot specify -4 and -6\n");
+          exit(EXIT_FAILURE);
+        }
+        conf.ipv = IPV6;
+        break;
+      case 'w':
+        if (conf.op != OP_UNDEFINED) {
+          fprintf(stderr, "ERR: cannot specify -w and -r\n");
+          exit(EXIT_FAILURE);
+        }
+        conf.op = OP_UPLOAD;
+        break;
+      case 'r':
+        if (conf.op != OP_UNDEFINED) {
+          fprintf(stderr, "ERR: cannot specify -w and -r\n");
+          exit(EXIT_FAILURE);
+        }
+        conf.op = OP_DOWNLOAD;
+        break;
+      case '?':
+        fprintf(stderr, "Usage: %s -h <host> -s <src-file> -d <dest-file> [-p <port>] -r|-w [-a] [-4|-6]\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+  }
+
+  if (!conf.host) {
+    fprintf(stderr, "ERR: missing host\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (!conf.src_file_path) {
+    fprintf(stderr, "ERR: missing source file\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (!conf.dst_file_path) {
+    fprintf(stderr, "ERR: missing destination file\n");
+    exit(EXIT_FAILURE);
+  }
+
+  int src_path_len = strlen(conf.src_file_path);
+  if (src_path_len > MAX_PATH_LEN) {
+    fprintf(stderr,
+            "ERR: Length of source file path greater than max allowed (%d)\n", MAX_PATH_LEN);
+    exit(EXIT_FAILURE);
+  }
+
+  int dst_path_len = strlen(conf.dst_file_path);
+  if (dst_path_len > MAX_PATH_LEN) {
+    fprintf(stderr,
+            "ERR: Length of destination file path greater than max allowed (%d)\n", MAX_PATH_LEN);
+    exit(EXIT_FAILURE);
+  }
+
+  if (conf.op == OP_UNDEFINED) {
+    fprintf(stderr, "ERR: One of -r or -w must be specified\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (conf.op == OP_UPLOAD) {
+    fprintf(stderr, "ERR: -w currently unsupported\n");
+    exit(EXIT_FAILURE);
+  }
+
+  return conf;
+}
+
+int tftpc_socket(tftpc_conf conf, struct sockaddr** saptr, socklen_t* lenp) {
   struct addrinfo hints = {};
   hints.ai_family = AF_UNSPEC;
+  if (conf.ipv == IPV4) {
+    hints.ai_family = AF_INET;
+  }
+  if (conf.ipv == IPV6) {
+    hints.ai_family = AF_INET6;
+  }
   hints.ai_socktype = SOCK_DGRAM;
 
   struct addrinfo *res = {};
-  int n = getaddrinfo(host, service, &hints, &res);
+  int n = getaddrinfo(conf.host, conf.service, &hints, &res);
   if (n != 0) {
     fprintf(stderr, "ERR: %s\n", gai_strerror(n));
     exit(EXIT_FAILURE);
