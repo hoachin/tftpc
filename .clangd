@@ -1,0 +1,8 @@
+CompileFlags:
+  Add: 
+    - -std=c23
+    - -Wall
+    - -Wextra
+    - -pedantic
+    - -Werror
+  Compiler: clang
