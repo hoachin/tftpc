@@ -1,20 +1,17 @@
 #define _POSIX_C_SOURCE 202405L
 
+#include "tftp-client.h"
 #include <errno.h>
 #include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include "tftp-client.h"
 
 int main(int argc, char **argv) {
   tftpc_conf conf = parse_args(argc, argv);
-
 
   if (conf.op == OP_READ) {
     read_file(&conf);
@@ -26,6 +23,47 @@ int main(int argc, char **argv) {
 }
 
 void read_file(tftpc_conf* conf) {
+  tftpc_session session = init_read_session(conf);
+
+  create_rrq(conf, &session);
+  send_packet(&session);
+
+  bool done = false;
+  while (!done) {
+    recv_packet(&session);
+
+    if (session.rx_len < 4) {
+      WARN("Invalid packet received");
+      // TODO send error response
+      continue;
+    }
+
+    uint16_t rx_op;
+    memcpy(&rx_op, session.rx_buff, sizeof(uint16_t));
+    rx_op = htons(rx_op);
+
+    switch (rx_op) {
+      case DATA:
+        size_t recvd = process_data_packet(&session);
+        create_ack(&session);
+        send_packet(&session);
+        done = recvd < BLOCK_SIZE;
+        break;
+      case ERROR:
+        process_error_packet(&session);
+        done = true;
+        break;
+      default:
+        unexpected_packet(&session);
+        done = true;
+        break;
+    }
+  }
+}
+
+tftpc_session init_read_session(tftpc_conf* conf) {
+  tftpc_session session = {};
+
   socklen_t salen;
   struct sockaddr* sa;
   int sockfd = tftpc_socket(conf, &sa, &salen);
@@ -35,82 +73,110 @@ void read_file(tftpc_conf* conf) {
     FATAL("Unable to open file - %s", strerror(errno));
   }
 
-  char tx_buff[1472];
-  char rx_buff[1472];
+  session.sockfd = sockfd;
+  session.salen = salen;
+  session.sa = sa;
+  session.fp = fp;
 
-  size_t len = create_rrq(conf, sizeof(tx_buff), tx_buff);
-  sendto(sockfd, tx_buff, len, 0, sa, salen);
+  return session;
+}
 
-  int expected_blk = 1;
-  while (true) {
-    ssize_t nr = recvfrom(sockfd, rx_buff, sizeof(rx_buff), 0, nullptr, nullptr);
-    if (nr < 0) {
-      FATAL("Read failure - %s", strerror(errno));
-    }
-
-    if (nr < 4) {
-      WARN("Invalid packet received");
-      // TODO send error response
-      continue;
-    }
-
-    uint16_t rx_op;
-    memcpy(&rx_op, rx_buff, sizeof(uint16_t));
-    rx_op = htons(rx_op);
-    if (rx_op == DATA) {
-      uint16_t rx_blk;
-      memcpy(&rx_blk, rx_buff+2, sizeof(uint16_t));
-      rx_blk = ntohs(rx_blk);
-      if (rx_blk == expected_blk) {
-        DEBUG("GOT BLOCK");
-        fwrite(rx_buff, 1, nr, fp);
-
-        // TODO send ACK
-      } else {
-        // TODO - is this fatal or can we send an error and ignore?
-        FATAL( "Unexpected block %d", rx_blk);
-      }
-
-      if (nr < 516) {
-        DEBUG("Small packet, all done");
-        break;
-      }
-    } else if (rx_op == ERROR) {
-      uint16_t err_code;
-      memcpy(&err_code, rx_buff+2, sizeof(uint16_t));
-      err_code = ntohs(err_code);
-      fprintf(stderr, "Error received: code: %d, msg: %.*s\n", err_code, (int)nr-4,
-              rx_buff+4);
-      break;
-    } else {
-      // TODO - is this fatal or can we send an error and ignore?
-      FATAL("Unexpected opcode");
-    }
+void send_packet(tftpc_session* session) {
+  ssize_t s = sendto(session->sockfd, session->tx_buff, session->tx_len, 0, session->sa, session->salen);
+  if (s < 0) {
+    FATAL("Send error - %s", strerror(errno));
   }
 }
 
-size_t create_rrq(tftpc_conf* conf, size_t buff_len, char buff[static buff_len] ) {
+void recv_packet(tftpc_session* session) {
+  struct sockaddr* recv_addr = nullptr;
+  socklen_t* recv_len = nullptr;
+
+  /* If this is first received packet then need to update the address to match the sender TID
+   * to be used in any subsequent send/recv calls */ 
+  if (session->block_num == 0) {
+    session->salen = sizeof(struct sockaddr_storage);
+    recv_addr = session->sa;
+    recv_len = &session->salen;
+  }
+  // TODO after the first recv should confirm any subsequent ones come from the same TID
+
+  ssize_t nr = recvfrom(session->sockfd, session->rx_buff, sizeof(session->rx_buff), 0, recv_addr, recv_len);
+  if (nr < 0) {
+    FATAL("Read failure - %s", strerror(errno));
+  }
+  session->rx_len = nr;
+}
+
+size_t process_data_packet(tftpc_session* session) {
+  uint16_t rx_blk;
+  memcpy(&rx_blk, session->rx_buff+2, sizeof(uint16_t));
+  rx_blk = ntohs(rx_blk);
+  if (rx_blk == session->block_num + 1) {
+    DEBUG("GOT BLOCK %d", rx_blk);
+    size_t w = fwrite(session->rx_buff+4, 1, session->rx_len-4, session->fp);
+    if (w < session->rx_len-4) {
+      FATAL("Short write");
+    }
+  } else {
+    // TODO - is this fatal or can we send an error and ignore?
+    FATAL( "Unexpected block %d", rx_blk);
+  }
+  session->block_num++;
+
+  if (session->rx_len-4 < BLOCK_SIZE) {
+    DEBUG("Small packet, all done");
+  }
+
+  return session->rx_len;
+}
+
+void process_error_packet(tftpc_session* session) {
+  uint16_t err_code;
+  memcpy(&err_code, session->rx_buff+2, sizeof(uint16_t));
+  err_code = ntohs(err_code);
+  fprintf(stderr, "Error received: code: %d, msg: %.*s\n", err_code, (int)session->rx_len-4,
+          session->rx_buff+4);
+}
+
+void unexpected_packet([[maybe_unused]] tftpc_session* session) {
+  // TODO - is this fatal or can we send an error and ignore?
+  FATAL("Unexpected opcode");
+}
+
+void create_ack([[maybe_unused]]tftpc_session* session) {
+  session->tx_len = 0;
+
+  uint16_t opcode = htons(ACK);
+  memcpy(session->tx_buff + session->tx_len, &opcode, sizeof(uint16_t));
+  session->tx_len += sizeof(uint16_t);
+
+  uint16_t block = htons(session->block_num);
+  memcpy(session->tx_buff + session->tx_len, &block, sizeof(uint16_t));
+  session->tx_len += sizeof(uint16_t);
+}
+
+void create_rrq(tftpc_conf* conf, tftpc_session* session) {
+  session->tx_len = 0;
+
   size_t path_len = strlen(conf->src_file_path) + 1;
   size_t mode_len = strlen(conf->mode) + 1;
   size_t opcode_len = sizeof(uint16_t);
   size_t packet_len = path_len + mode_len + opcode_len;
 
-  if (buff_len < packet_len) {
+  if (sizeof(session->tx_buff) < packet_len) {
     FATAL("Packet size bigger than buffer");
   }
 
-  size_t offset = 0;
   uint16_t opcode = htons(RRQ);
-  memcpy(buff + offset, &opcode, opcode_len);
-  offset += opcode_len;
+  memcpy(session->tx_buff + session->tx_len, &opcode, opcode_len);
+  session->tx_len += opcode_len;
 
-  memcpy(buff + offset, conf->src_file_path, path_len);
-  offset += path_len;
+  memcpy(session->tx_buff + session->tx_len, conf->src_file_path, path_len);
+  session->tx_len += path_len;
 
-  memcpy(buff + offset, conf->mode, mode_len);
-  offset += mode_len;
-
-  return offset;
+  memcpy(session->tx_buff + session->tx_len, conf->mode, mode_len);
+  session->tx_len += mode_len;
 }
 
 void write_file([[maybe_unused]]tftpc_conf* conf) {
@@ -236,7 +302,7 @@ int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp) {
     exit(EXIT_FAILURE);
   }
 
-  *saptr = malloc(res->ai_addrlen);
+  *saptr = malloc(sizeof(struct sockaddr_storage));
   memcpy(*saptr, res->ai_addr, res->ai_addrlen);
   *lenp = res->ai_addrlen;
 
