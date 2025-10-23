@@ -9,76 +9,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-#define MAX_PATH_LEN 1460
-#define BLOCK_SIZE 512
-#define TIMEOUT 5
-
-#define RRQ 1
-#define WRQ 2
-#define DATA 3
-#define ACK 4
-#define ERROR 5
-
-enum tftpc_op {
-  OP_UNDEFINED,
-  OP_UPLOAD,
-  OP_DOWNLOAD
-};
-typedef enum tftpc_op tftpc_op;
-
-enum tftpc_ipv {
-  IPV_UNSPEC,
-  IPV4,
-  IPV6
-};
-typedef enum tftpc_ipv tftpc_ipv;
-
-struct tftpc_conf {
-  const char* host;
-  const char* service;
-  const char* src_file_path;
-  const char* dst_file_path;
-  const char* mode;
-  tftpc_ipv ipv;
-  tftpc_op op;
-};
-typedef struct tftpc_conf tftpc_conf;
-
-int tftpc_socket(tftpc_conf conf, struct sockaddr** saptr, socklen_t* lenp);
-tftpc_conf parse_args(int argc, char** argv);
+#include "tftp-client.h"
 
 int main(int argc, char **argv) {
   tftpc_conf conf = parse_args(argc, argv);
 
-  FILE* fp = fopen(conf.dst_file_path, "w");
+
+  if (conf.op == OP_READ) {
+    read_file(&conf);
+  } else if (conf.op == OP_WRITE) {
+    write_file(&conf);
+  } else {
+    fprintf(stderr, "Unexpected operation %d\n", conf.op);
+    exit(EXIT_FAILURE);
+  }
+}
+
+void read_file(tftpc_conf* conf) {
+  socklen_t salen;
+  struct sockaddr* sa;
+  int sockfd = tftpc_socket(conf, &sa, &salen);
+
+  FILE* fp = fopen(conf->dst_file_path, "w");
   if (!fp) {
     fprintf(stderr, "ERR: unable to open file - %s\n", strerror(errno));
     exit(EXIT_FAILURE);
   }
 
-  socklen_t salen;
-  struct sockaddr* sa;
-  int sockfd = tftpc_socket(conf, &sa, &salen);
-
   char tx_buff[1472];
   char rx_buff[1472];
 
-  size_t offset = 0;
-  uint16_t opcode = htons(RRQ);
-  memcpy(tx_buff + offset, &opcode, sizeof(opcode));
-  offset += sizeof(opcode);
-
-  memcpy(tx_buff + offset, conf.src_file_path, strlen(conf.src_file_path) + 1);
-  offset += strlen(conf.src_file_path) + 1;
-
-  memcpy(tx_buff + offset, conf.mode, strlen(conf.mode) + 1);
-  offset += strlen(conf.mode) + 1;
-
-  sendto(sockfd, tx_buff, offset, 0, sa, salen);
+  size_t len = create_rrq(conf, sizeof(tx_buff), tx_buff);
+  sendto(sockfd, tx_buff, len, 0, sa, salen);
 
   int expected_blk = 1;
   while (true) {
@@ -128,6 +92,35 @@ int main(int argc, char **argv) {
   }
 }
 
+size_t create_rrq(tftpc_conf* conf, size_t buff_len, char buff[static buff_len] ) {
+  size_t path_len = strlen(conf->src_file_path) + 1;
+  size_t mode_len = strlen(conf->mode) + 1;
+  size_t opcode_len = sizeof(uint16_t);
+  size_t packet_len = path_len + mode_len + opcode_len;
+
+  if (buff_len < packet_len) {
+    fprintf(stderr, "ERR: packet size bigger than buffer\n");
+  }
+
+  size_t offset = 0;
+  uint16_t opcode = htons(RRQ);
+  memcpy(buff + offset, &opcode, opcode_len);
+  offset += opcode_len;
+
+  memcpy(buff + offset, conf->src_file_path, path_len);
+  offset += path_len;
+
+  memcpy(buff + offset, conf->mode, mode_len);
+  offset += mode_len;
+
+  return offset;
+}
+
+void write_file([[maybe_unused]]tftpc_conf* conf) {
+  // TODO
+
+}
+
 tftpc_conf parse_args(int argc, char** argv) {
   tftpc_conf conf = {
     .host = nullptr,
@@ -172,14 +165,14 @@ tftpc_conf parse_args(int argc, char** argv) {
           fprintf(stderr, "ERR: cannot specify -w and -r\n");
           exit(EXIT_FAILURE);
         }
-        conf.op = OP_UPLOAD;
+        conf.op = OP_WRITE;
         break;
       case 'r':
         if (conf.op != OP_UNDEFINED) {
           fprintf(stderr, "ERR: cannot specify -w and -r\n");
           exit(EXIT_FAILURE);
         }
-        conf.op = OP_DOWNLOAD;
+        conf.op = OP_READ;
         break;
       case '?':
         fprintf(stderr, "Usage: %s -h <host> -s <src-file> -d <dest-file> [-p <port>] -r|-w [-a] [-4|-6]\n", argv[0]);
@@ -221,7 +214,7 @@ tftpc_conf parse_args(int argc, char** argv) {
     exit(EXIT_FAILURE);
   }
 
-  if (conf.op == OP_UPLOAD) {
+  if (conf.op == OP_WRITE) {
     fprintf(stderr, "ERR: -w currently unsupported\n");
     exit(EXIT_FAILURE);
   }
@@ -229,19 +222,19 @@ tftpc_conf parse_args(int argc, char** argv) {
   return conf;
 }
 
-int tftpc_socket(tftpc_conf conf, struct sockaddr** saptr, socklen_t* lenp) {
+int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp) {
   struct addrinfo hints = {};
   hints.ai_family = AF_UNSPEC;
-  if (conf.ipv == IPV4) {
+  if (conf->ipv == IPV4) {
     hints.ai_family = AF_INET;
   }
-  if (conf.ipv == IPV6) {
+  if (conf->ipv == IPV6) {
     hints.ai_family = AF_INET6;
   }
   hints.ai_socktype = SOCK_DGRAM;
 
   struct addrinfo *res = {};
-  int n = getaddrinfo(conf.host, conf.service, &hints, &res);
+  int n = getaddrinfo(conf->host, conf->service, &hints, &res);
   if (n != 0) {
     fprintf(stderr, "ERR: %s\n", gai_strerror(n));
     exit(EXIT_FAILURE);
