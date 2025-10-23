@@ -6,7 +6,6 @@
 #include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -22,8 +21,7 @@ int main(int argc, char **argv) {
   } else if (conf.op == OP_WRITE) {
     write_file(&conf);
   } else {
-    fprintf(stderr, "Unexpected operation %d\n", conf.op);
-    exit(EXIT_FAILURE);
+    FATAL("Unexpected operation %d", conf.op);
   }
 }
 
@@ -34,8 +32,7 @@ void read_file(tftpc_conf* conf) {
 
   FILE* fp = fopen(conf->dst_file_path, "w");
   if (!fp) {
-    fprintf(stderr, "ERR: unable to open file - %s\n", strerror(errno));
-    exit(EXIT_FAILURE);
+    FATAL("Unable to open file - %s", strerror(errno));
   }
 
   char tx_buff[1472];
@@ -48,12 +45,12 @@ void read_file(tftpc_conf* conf) {
   while (true) {
     ssize_t nr = recvfrom(sockfd, rx_buff, sizeof(rx_buff), 0, nullptr, nullptr);
     if (nr < 0) {
-      fprintf(stderr, "ERR: read - %s\n", strerror(errno));
-      exit(EXIT_FAILURE);
+      FATAL("Read failure - %s", strerror(errno));
     }
 
     if (nr < 4) {
-      fprintf(stderr, "WARN: invalid packet received\n");
+      WARN("Invalid packet received");
+      // TODO send error response
       continue;
     }
 
@@ -65,29 +62,29 @@ void read_file(tftpc_conf* conf) {
       memcpy(&rx_blk, rx_buff+2, sizeof(uint16_t));
       rx_blk = ntohs(rx_blk);
       if (rx_blk == expected_blk) {
-        fprintf(stderr, "DEBUG: GOT BLOCK %d\n", rx_blk);
+        DEBUG("GOT BLOCK");
         fwrite(rx_buff, 1, nr, fp);
 
         // TODO send ACK
       } else {
-        fprintf(stderr, "ERROR: unexpected block %d\n", rx_blk);
-        exit(EXIT_FAILURE);
+        // TODO - is this fatal or can we send an error and ignore?
+        FATAL( "Unexpected block %d", rx_blk);
       }
 
       if (nr < 516) {
-        fprintf(stderr, "DEGUG: small packet, all done\n");
+        DEBUG("Small packet, all done");
         break;
       }
     } else if (rx_op == ERROR) {
       uint16_t err_code;
       memcpy(&err_code, rx_buff+2, sizeof(uint16_t));
       err_code = ntohs(err_code);
-      fprintf(stderr, "ERR: code: %d, msg: %.*s", err_code, (int)nr-4,
+      fprintf(stderr, "Error received: code: %d, msg: %.*s\n", err_code, (int)nr-4,
               rx_buff+4);
       break;
     } else {
-      fprintf(stderr, "DEBUG: Unexpected opcode\n");
-      exit(EXIT_FAILURE);
+      // TODO - is this fatal or can we send an error and ignore?
+      FATAL("Unexpected opcode");
     }
   }
 }
@@ -99,7 +96,7 @@ size_t create_rrq(tftpc_conf* conf, size_t buff_len, char buff[static buff_len] 
   size_t packet_len = path_len + mode_len + opcode_len;
 
   if (buff_len < packet_len) {
-    fprintf(stderr, "ERR: packet size bigger than buffer\n");
+    FATAL("Packet size bigger than buffer");
   }
 
   size_t offset = 0;
@@ -148,75 +145,61 @@ tftpc_conf parse_args(int argc, char** argv) {
         conf.mode = "netascii"; break;
       case '4':
         if (conf.ipv != IPV_UNSPEC) {
-          fprintf(stderr, "ERR: cannot specify -4 and -6\n");
-          exit(EXIT_FAILURE);
+          FATAL("Cannot specify -4 and -6");
         }
         conf.ipv = IPV4;
         break;
       case '6':
         if (conf.ipv != IPV_UNSPEC) {
-          fprintf(stderr, "ERR: cannot specify -4 and -6\n");
-          exit(EXIT_FAILURE);
+          FATAL("Cannot specify -4 and -6");
         }
         conf.ipv = IPV6;
         break;
       case 'w':
         if (conf.op != OP_UNDEFINED) {
-          fprintf(stderr, "ERR: cannot specify -w and -r\n");
-          exit(EXIT_FAILURE);
+          FATAL("Cannot specify -w and -r");
         }
         conf.op = OP_WRITE;
         break;
       case 'r':
         if (conf.op != OP_UNDEFINED) {
-          fprintf(stderr, "ERR: cannot specify -w and -r\n");
-          exit(EXIT_FAILURE);
+          FATAL("Cannot specify -w and -r");
         }
         conf.op = OP_READ;
         break;
       case '?':
-        fprintf(stderr, "Usage: %s -h <host> -s <src-file> -d <dest-file> [-p <port>] -r|-w [-a] [-4|-6]\n", argv[0]);
-        exit(EXIT_FAILURE);
+        FATAL("Usage: %s -h <host> -s <src-file> -d <dest-file> [-p <port>] -r|-w [-a] [-4|-6]", argv[0]);
     }
   }
 
   if (!conf.host) {
-    fprintf(stderr, "ERR: missing host\n");
-    exit(EXIT_FAILURE);
+    FATAL("Missing host");
   }
 
   if (!conf.src_file_path) {
-    fprintf(stderr, "ERR: missing source file\n");
-    exit(EXIT_FAILURE);
+    FATAL("Missing source file");
   }
 
   if (!conf.dst_file_path) {
-    fprintf(stderr, "ERR: missing destination file\n");
-    exit(EXIT_FAILURE);
+    FATAL("Missing destination file");
   }
 
   int src_path_len = strlen(conf.src_file_path);
   if (src_path_len > MAX_PATH_LEN) {
-    fprintf(stderr,
-            "ERR: Length of source file path greater than max allowed (%d)\n", MAX_PATH_LEN);
-    exit(EXIT_FAILURE);
+    FATAL("Length of source file path greater than max allowed (%d)", MAX_PATH_LEN);
   }
 
   int dst_path_len = strlen(conf.dst_file_path);
   if (dst_path_len > MAX_PATH_LEN) {
-    fprintf(stderr,
-            "ERR: Length of destination file path greater than max allowed (%d)\n", MAX_PATH_LEN);
-    exit(EXIT_FAILURE);
+    FATAL( "Length of destination file path greater than max allowed (%d)", MAX_PATH_LEN);
   }
 
   if (conf.op == OP_UNDEFINED) {
-    fprintf(stderr, "ERR: One of -r or -w must be specified\n");
-    exit(EXIT_FAILURE);
+    FATAL("One of -r or -w must be specified");
   }
 
   if (conf.op == OP_WRITE) {
-    fprintf(stderr, "ERR: -w currently unsupported\n");
-    exit(EXIT_FAILURE);
+    FATAL("-w currently unsupported");
   }
 
   return conf;
@@ -236,8 +219,7 @@ int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp) {
   struct addrinfo *res = {};
   int n = getaddrinfo(conf->host, conf->service, &hints, &res);
   if (n != 0) {
-    fprintf(stderr, "ERR: %s\n", gai_strerror(n));
-    exit(EXIT_FAILURE);
+    FATAL("%s", gai_strerror(n));
   }
 
   int sockfd;
@@ -250,7 +232,7 @@ int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp) {
   } while ((res = res->ai_next) != nullptr);
 
   if (res == nullptr) {
-    fprintf(stderr, "ERR: Unable to connect\n");
+    FATAL("Unable to create socket");
     exit(EXIT_FAILURE);
   }
 

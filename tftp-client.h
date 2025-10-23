@@ -2,6 +2,12 @@
 #define TFTPC_H
 
 #include <sys/socket.h>
+#include <stdio.h>
+
+#define DEBUG(...) fprintf(stderr, "[DEBUG] %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
+#define WARN(...)  fprintf(stderr, "[WARN]  %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
+#define ERROR(...) fprintf(stderr, "[ERROR] %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
+#define FATAL(...) fprintf(stderr, "[FATAL] %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n"), exit(EXIT_FAILURE)
 
 #define MAX_PATH_LEN 1460
 #define BLOCK_SIZE 512
