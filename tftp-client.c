@@ -2,6 +2,7 @@
 
 #include "tftp-client.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -68,15 +69,15 @@ tftpc_session init_read_session(tftpc_conf* conf) {
   struct sockaddr* sa;
   int sockfd = tftpc_socket(conf, &sa, &salen);
 
-  FILE* fp = fopen(conf->dst_file_path, "w");
-  if (!fp) {
+  int fd = open(conf->dst_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
     FATAL("Unable to open file - %s", strerror(errno));
   }
 
   session.sockfd = sockfd;
   session.salen = salen;
   session.sa = sa;
-  session.fp = fp;
+  session.fd = fd;
 
   return session;
 }
@@ -114,7 +115,7 @@ size_t process_data_packet(tftpc_session* session) {
   rx_blk = ntohs(rx_blk);
   if (rx_blk == session->block_num + 1) {
     DEBUG("GOT BLOCK %d", rx_blk);
-    size_t w = fwrite(session->rx_buff+4, 1, session->rx_len-4, session->fp);
+    size_t w = write(session->fd, session->rx_buff+4, session->rx_len-4);
     if (w < session->rx_len-4) {
       FATAL("Short write");
     }

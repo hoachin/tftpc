@@ -59,7 +59,7 @@ struct tftpc_session {
   int sockfd;
   socklen_t salen;
   struct sockaddr* sa;
-  FILE* fp;
+  int fd;
   unsigned block_num;
 };
 typedef struct tftpc_session tftpc_session;
