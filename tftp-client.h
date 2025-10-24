@@ -38,6 +38,13 @@ enum tftpc_ipv {
 };
 typedef enum tftpc_ipv tftpc_ipv;
 
+struct data_packet {
+  uint16_t opcode;
+  uint16_t block_num;
+  uint8_t data[];
+};
+typedef struct data_packet data_packet;
+
 struct tftpc_conf {
   const char* host;
   const char* service;

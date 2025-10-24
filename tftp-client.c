@@ -110,18 +110,19 @@ void recv_packet(tftpc_session* session) {
 }
 
 size_t process_data_packet(tftpc_session* session) {
-  uint16_t rx_blk;
-  memcpy(&rx_blk, session->rx_buff+2, sizeof(uint16_t));
-  rx_blk = ntohs(rx_blk);
-  if (rx_blk == session->block_num + 1) {
-    DEBUG("GOT BLOCK %d", rx_blk);
-    size_t w = write(session->fd, session->rx_buff+4, session->rx_len-4);
-    if (w < session->rx_len-4) {
+  data_packet* dp = (data_packet*)session->rx_buff;
+  uint16_t block_num = ntohs(dp->block_num);
+
+  if (block_num == session->block_num + 1) {
+    DEBUG("GOT BLOCK %d", block_num);
+    size_t data_len = session->rx_len - sizeof(data_packet);
+    size_t w = write(session->fd, dp->data, data_len);
+    if (w < data_len) {
       FATAL("Short write");
     }
   } else {
     // TODO - is this fatal or can we send an error and ignore?
-    FATAL( "Unexpected block %d", rx_blk);
+    FATAL( "Unexpected block %d", block_num);
   }
   session->block_num++;
 
