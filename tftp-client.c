@@ -29,8 +29,7 @@ void read_file(tftpc_conf* conf) {
   create_rrq(conf, &session);
   send_packet(&session);
 
-  bool done = false;
-  while (!done) {
+  while (session.state == STATE_IN_PROGRESS) {
     recv_packet(&session);
 
     if (session.rx_len < 4) {
@@ -45,18 +44,15 @@ void read_file(tftpc_conf* conf) {
 
     switch (rx_op) {
       case DATA:
-        size_t recvd = process_data_packet(&session);
+        process_data_packet(&session);
         create_ack(&session);
         send_packet(&session);
-        done = recvd < BLOCK_SIZE;
         break;
       case ERROR:
         process_error_packet(&session);
-        done = true;
         break;
       default:
         unexpected_packet(&session);
-        done = true;
         break;
     }
   }
@@ -74,6 +70,7 @@ tftpc_session init_read_session(tftpc_conf* conf) {
     FATAL("Unable to open file - %s", strerror(errno));
   }
 
+  session.state = STATE_PENDING;
   session.sockfd = sockfd;
   session.salen = salen;
   session.sa = sa;
@@ -109,13 +106,13 @@ void recv_packet(tftpc_session* session) {
   session->rx_len = nr;
 }
 
-size_t process_data_packet(tftpc_session* session) {
+void process_data_packet(tftpc_session* session) {
   data_packet* dp = (data_packet*)session->rx_buff;
+  size_t data_len = session->rx_len - sizeof(data_packet);
   uint16_t block_num = ntohs(dp->block_num);
 
   if (block_num == session->block_num + 1) {
     DEBUG("GOT BLOCK %d", block_num);
-    size_t data_len = session->rx_len - sizeof(data_packet);
     size_t w = write(session->fd, dp->data, data_len);
     if (w < data_len) {
       FATAL("Short write");
@@ -126,23 +123,24 @@ size_t process_data_packet(tftpc_session* session) {
   }
   session->block_num++;
 
-  if (session->rx_len-4 < BLOCK_SIZE) {
+  if (data_len < BLOCK_SIZE) {
     DEBUG("Small packet, all done");
+    session->state = STATE_COMPLETE;
   }
-
-  return session->rx_len;
 }
 
 void process_error_packet(tftpc_session* session) {
-  uint16_t err_code;
-  memcpy(&err_code, session->rx_buff+2, sizeof(uint16_t));
-  err_code = ntohs(err_code);
-  fprintf(stderr, "Error received: code: %d, msg: %.*s\n", err_code, (int)session->rx_len-4,
-          session->rx_buff+4);
+  error_packet* ep = (error_packet*)session->rx_buff;
+  uint16_t error_code = ep->error_code;
+  size_t msglen = session->rx_len - sizeof(error_packet);
+  fprintf(stderr, "Error received: code: %d, msg: %.*s\n", error_code,
+          (int)msglen, ep->msg);
+  session->state = STATE_ERROR;
 }
 
 void unexpected_packet([[maybe_unused]] tftpc_session* session) {
   // TODO - is this fatal or can we send an error and ignore?
+  session->state = STATE_ERROR;
   FATAL("Unexpected opcode");
 }
 
@@ -160,6 +158,7 @@ void create_ack([[maybe_unused]]tftpc_session* session) {
 
 void create_rrq(tftpc_conf* conf, tftpc_session* session) {
   session->tx_len = 0;
+  session->state = STATE_IN_PROGRESS;
 
   size_t path_len = strlen(conf->src_file_path) + 1;
   size_t mode_len = strlen(conf->mode) + 1;

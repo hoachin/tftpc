@@ -38,12 +38,27 @@ enum tftpc_ipv {
 };
 typedef enum tftpc_ipv tftpc_ipv;
 
+enum tftpc_state {
+  STATE_PENDING,
+  STATE_IN_PROGRESS,
+  STATE_ERROR,
+  STATE_COMPLETE
+};
+typedef enum tftpc_state tftpc_state;
+
 struct data_packet {
   uint16_t opcode;
   uint16_t block_num;
   uint8_t data[];
-};
+} __attribute__((packed));
 typedef struct data_packet data_packet;
+
+struct error_packet {
+  uint16_t opcode;
+  uint16_t error_code;
+  uint8_t msg[];
+} __attribute__((packed));
+typedef struct error_packet error_packet;
 
 struct tftpc_conf {
   const char* host;
@@ -59,6 +74,7 @@ typedef struct tftpc_conf tftpc_conf;
 constexpr size_t BUFFER_SIZE = 1400;
 
 struct tftpc_session {
+  tftpc_state state;
   uint8_t tx_buff[BUFFER_SIZE];
   uint8_t rx_buff[BUFFER_SIZE];
   size_t tx_len;
@@ -89,7 +105,7 @@ void create_rrq(tftpc_conf* conf, tftpc_session* session);
 
 void create_ack(tftpc_session* session);
 
-size_t process_data_packet(tftpc_session* session);
+void process_data_packet(tftpc_session* session);
 
 void process_error_packet(tftpc_session* session);
 
