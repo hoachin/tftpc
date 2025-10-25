@@ -305,6 +305,9 @@ int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp) {
 
   *saptr = malloc(sizeof(struct sockaddr_storage));
   memcpy(*saptr, res->ai_addr, res->ai_addrlen);
+  if (!saptr) {
+    FATAL("Unable to allocate socket addr - %s", strerror(errno));
+  }
   *lenp = res->ai_addrlen;
 
   freeaddrinfo(ressave);
