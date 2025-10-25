@@ -12,6 +12,7 @@
 #define FATAL(...) fprintf(stderr, "[FATAL] %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n"), exit(EXIT_FAILURE)
 
 #define MAX_PATH_LEN 1024
+#define MAX_ERRORS 5
 #define BLOCK_SIZE 512
 #define TIMEOUT 5
 
@@ -39,9 +40,7 @@ enum tftpc_ipv {
 typedef enum tftpc_ipv tftpc_ipv;
 
 enum tftpc_state {
-  STATE_PENDING,
   STATE_IN_PROGRESS,
-  STATE_ERROR,
   STATE_COMPLETE
 };
 typedef enum tftpc_state tftpc_state;
@@ -123,6 +122,6 @@ void process_data_packet(tftpc_session* session);
 
 void process_error_packet(tftpc_session* session);
 
-void unexpected_packet(tftpc_session* session);
+void send_error(tftpc_session* session, error_code ecode, const char* msg, size_t msglen);
 
 #endif

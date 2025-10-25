@@ -33,11 +33,9 @@ void read_file(tftpc_conf* conf) {
     recv_packet(&session);
 
     if (session.rx_len < 4) {
-      WARN("Invalid packet received");
       const char* msg = "Invalid Packet";
-      create_error_packet(&session, UNDEFINED, msg, strlen(msg));
-      send_packet(&session);
-      continue;
+      send_error(&session, UNDEFINED, msg, strlen(msg));
+      FATAL("Invalid packet received");
     }
 
     uint16_t rx_op;
@@ -54,7 +52,9 @@ void read_file(tftpc_conf* conf) {
         process_error_packet(&session);
         break;
       default:
-        unexpected_packet(&session);
+        const char* msg = "Illegal operation";
+        send_error(&session, ILLEGAL_OPERATION, msg, strlen(msg));
+        FATAL("Unexpected opcode %d", rx_op);
         break;
     }
   }
@@ -72,7 +72,7 @@ tftpc_session init_read_session(tftpc_conf* conf) {
     FATAL("Unable to open file - %s", strerror(errno));
   }
 
-  session.state = STATE_PENDING;
+  session.state = STATE_IN_PROGRESS;
   session.sockfd = sockfd;
   session.salen = salen;
   session.sa = sa;
@@ -103,6 +103,8 @@ void recv_packet(tftpc_session* session) {
 
   ssize_t nr = recvfrom(session->sockfd, session->rx_buff, sizeof(session->rx_buff), 0, recv_addr, recv_len);
   if (nr < 0) {
+    const char* msg = "Client error";
+    send_error(session, UNDEFINED, msg, strlen(msg));
     FATAL("Read failure - %s", strerror(errno));
   }
   session->rx_len = nr;
@@ -117,10 +119,13 @@ void process_data_packet(tftpc_session* session) {
     DEBUG("GOT BLOCK %d", block_num);
     size_t w = write(session->fd, dp->data, data_len);
     if (w < data_len) {
+      const char* msg = "Client error";
+      send_error(session, UNDEFINED, msg, strlen(msg));
       FATAL("Short write");
     }
   } else {
-    // TODO - is this fatal or can we send an error and ignore?
+    const char* msg = "Unexpected block";
+    send_error(session, UNDEFINED, msg, strlen(msg));
     FATAL( "Unexpected block %d", block_num);
   }
   session->block_num++;
@@ -150,15 +155,7 @@ void process_error_packet(tftpc_session* session) {
   error_packet* ep = (error_packet*)session->rx_buff;
   uint16_t error_code = ep->error_code;
   size_t msglen = session->rx_len - sizeof(error_packet);
-  fprintf(stderr, "Error received: code: %d, msg: %.*s\n", error_code,
-          (int)msglen, ep->msg);
-  session->state = STATE_ERROR;
-}
-
-void unexpected_packet(tftpc_session* session) {
-  // TODO - is this fatal or can we send an error and ignore?
-  session->state = STATE_ERROR;
-  FATAL("Unexpected opcode");
+  FATAL("Error received: code: %d, msg: %.*s\n", error_code, (int)msglen, ep->msg);
 }
 
 void create_ack(tftpc_session* session) {
@@ -330,4 +327,9 @@ int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp) {
   freeaddrinfo(ressave);
 
   return sockfd;
+}
+
+void send_error(tftpc_session* session, error_code ecode, const char* msg, size_t msglen) {
+  create_error_packet(session, ecode, msg, msglen);
+  send_packet(session);
 }
