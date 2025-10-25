@@ -34,7 +34,9 @@ void read_file(tftpc_conf* conf) {
 
     if (session.rx_len < 4) {
       WARN("Invalid packet received");
-      // TODO send error response
+      const char* msg = "Invalid Packet";
+      create_error_packet(&session, UNDEFINED, msg, strlen(msg));
+      send_packet(&session);
       continue;
     }
 
@@ -129,6 +131,21 @@ void process_data_packet(tftpc_session* session) {
   }
 }
 
+void create_error_packet(tftpc_session *session, error_code ec, const char* msg, size_t msglen) {
+  session->tx_len = 0;
+
+  uint16_t opcode = htons(ERROR);
+  memcpy(session->tx_buff + session->tx_len, &opcode, sizeof(uint16_t));
+  session->tx_len += sizeof(uint16_t);
+
+  uint16_t ecode = htons(ec);
+  memcpy(session->tx_buff + session->tx_len, &ecode, sizeof(uint16_t));
+  session->tx_len += sizeof(uint16_t);
+
+  memcpy(session->tx_buff + session->tx_len, msg, msglen+1);
+  session->tx_len += msglen+1;
+}
+
 void process_error_packet(tftpc_session* session) {
   error_packet* ep = (error_packet*)session->rx_buff;
   uint16_t error_code = ep->error_code;
@@ -138,13 +155,13 @@ void process_error_packet(tftpc_session* session) {
   session->state = STATE_ERROR;
 }
 
-void unexpected_packet([[maybe_unused]] tftpc_session* session) {
+void unexpected_packet(tftpc_session* session) {
   // TODO - is this fatal or can we send an error and ignore?
   session->state = STATE_ERROR;
   FATAL("Unexpected opcode");
 }
 
-void create_ack([[maybe_unused]]tftpc_session* session) {
+void create_ack(tftpc_session* session) {
   session->tx_len = 0;
 
   uint16_t opcode = htons(ACK);

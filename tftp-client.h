@@ -46,6 +46,18 @@ enum tftpc_state {
 };
 typedef enum tftpc_state tftpc_state;
 
+enum error_code {
+  UNDEFINED,
+  FILE_NOT_FOUND,
+  ACCESS_VIOLATION,
+  DISK_FULL,
+  ILLEGAL_OPERATION,
+  UNKNOWN_TID,
+  FILE_EXISTS,
+  NO_SUCH_USER
+};
+typedef enum error_code error_code;
+
 struct data_packet {
   uint16_t opcode;
   uint16_t block_num;
@@ -104,6 +116,8 @@ void write_file(tftpc_conf* conf);
 void create_rrq(tftpc_conf* conf, tftpc_session* session);
 
 void create_ack(tftpc_session* session);
+
+void create_error_packet(tftpc_session* session, error_code ec, const char* msg, size_t msglen);
 
 void process_data_packet(tftpc_session* session);
 
