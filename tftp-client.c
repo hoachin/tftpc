@@ -60,6 +60,46 @@ void read_file(tftpc_conf* conf) {
   }
 }
 
+void write_file(tftpc_conf* conf) {
+  tftpc_session session = init_write_session(conf);
+
+  create_wrq(conf, &session);
+  send_packet(&session);
+
+  while (session.state == STATE_IN_PROGRESS) {
+    recv_packet(&session);
+
+    if (session.rx_len < 4) {
+      const char* msg = "Invalid Packet";
+      send_error(&session, UNDEFINED, msg, strlen(msg));
+      FATAL("Invalid packet received");
+    }
+
+    uint16_t rx_op;
+    memcpy(&rx_op, session.rx_buff, sizeof(uint16_t));
+    rx_op = htons(rx_op);
+
+    switch (rx_op) {
+      case ACK:
+        process_ack_packet(&session);
+        ssize_t nr = create_data_packet(&session);
+        if (nr > 0) {
+          // TODO - what if the file is exactly 512bytes in size?
+          send_packet(&session);
+        }
+        break;
+      case ERROR:
+        process_error_packet(&session);
+        break;
+      default:
+        const char* msg = "Illegal operation";
+        send_error(&session, ILLEGAL_OPERATION, msg, strlen(msg));
+        FATAL("Unexpected opcode %d", rx_op);
+        break;
+    }
+  }
+}
+
 tftpc_session init_read_session(tftpc_conf* conf) {
   tftpc_session session = {};
 
@@ -68,6 +108,27 @@ tftpc_session init_read_session(tftpc_conf* conf) {
   int sockfd = tftpc_socket(conf, &sa, &salen);
 
   int fd = open(conf->dst_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    FATAL("Unable to open file - %s", strerror(errno));
+  }
+
+  session.state = STATE_IN_PROGRESS;
+  session.sockfd = sockfd;
+  session.salen = salen;
+  session.sa = sa;
+  session.fd = fd;
+
+  return session;
+}
+
+tftpc_session init_write_session(tftpc_conf* conf) {
+  tftpc_session session = {};
+
+  socklen_t salen;
+  struct sockaddr* sa;
+  int sockfd = tftpc_socket(conf, &sa, &salen);
+
+  int fd = open(conf->dst_file_path, O_RDONLY);
   if (fd < 0) {
     FATAL("Unable to open file - %s", strerror(errno));
   }
@@ -136,6 +197,19 @@ void process_data_packet(tftpc_session* session) {
   }
 }
 
+void process_ack_packet(tftpc_session* session) {
+  ack_packet* ap = (ack_packet*)session->rx_buff;
+  uint16_t block_num = ntohs(ap->block_num);
+
+  if (block_num == session->block_num) {
+    DEBUG("GOT ACK FOR %d", block_num);
+  } else {
+    const char* msg = "Unexpected block";
+    send_error(session, UNDEFINED, msg, strlen(msg));
+    FATAL( "Unexpected block %d", block_num);
+  }
+}
+
 void create_error_packet(tftpc_session *session, error_code ec, const char* msg, size_t msglen) {
   session->tx_len = 0;
 
@@ -149,6 +223,32 @@ void create_error_packet(tftpc_session *session, error_code ec, const char* msg,
 
   memcpy(session->tx_buff + session->tx_len, msg, msglen+1);
   session->tx_len += msglen+1;
+}
+
+ssize_t create_data_packet(tftpc_session* session) {
+  session->tx_len = 0;
+
+  uint16_t opcode = htons(DATA);
+  memcpy(session->tx_buff + session->tx_len, &opcode, sizeof(uint16_t));
+  session->tx_len += sizeof(uint16_t);
+
+  session->block_num++;
+  uint16_t block_num = htons(session->block_num);
+  memcpy(session->tx_buff + session->tx_len, &block_num, sizeof(uint16_t));
+  session->tx_len += sizeof(uint16_t);
+
+  ssize_t nr = read(session->fd, session->tx_buff, BLOCK_SIZE);
+  if (nr < 0) {
+    const char* msg = "Client error";
+    send_error(session, UNDEFINED, msg, strlen(msg));
+    FATAL("Read error - %s", strerror(errno));
+  }
+  
+  if (nr == 0) {
+    session->state = STATE_COMPLETE;
+  }
+
+  return nr;
 }
 
 void process_error_packet(tftpc_session* session) {
@@ -194,9 +294,28 @@ void create_rrq(tftpc_conf* conf, tftpc_session* session) {
   session->tx_len += mode_len;
 }
 
-void write_file([[maybe_unused]]tftpc_conf* conf) {
-  // TODO
+void create_wrq(tftpc_conf* conf, tftpc_session* session) {
+  session->tx_len = 0;
+  session->state = STATE_IN_PROGRESS;
 
+  size_t path_len = strlen(conf->dst_file_path) + 1;
+  size_t mode_len = strlen(conf->mode) + 1;
+  size_t opcode_len = sizeof(uint16_t);
+  size_t packet_len = path_len + mode_len + opcode_len;
+
+  if (sizeof(session->tx_buff) < packet_len) {
+    FATAL("Packet size bigger than buffer");
+  }
+
+  uint16_t opcode = htons(WRQ);
+  memcpy(session->tx_buff + session->tx_len, &opcode, opcode_len);
+  session->tx_len += opcode_len;
+
+  memcpy(session->tx_buff + session->tx_len, conf->dst_file_path, path_len);
+  session->tx_len += path_len;
+
+  memcpy(session->tx_buff + session->tx_len, conf->mode, mode_len);
+  session->tx_len += mode_len;
 }
 
 tftpc_conf parse_args(int argc, char** argv) {

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 
 #define DEBUG(...) fprintf(stderr, "[DEBUG] %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
 #define WARN(...)  fprintf(stderr, "[WARN]  %s:%d (%s): ", __FILE__, __LINE__, __func__), fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
@@ -71,6 +72,12 @@ struct error_packet {
 } __attribute__((packed));
 typedef struct error_packet error_packet;
 
+struct ack_packet {
+  uint16_t opcode;
+  uint16_t block_num;
+} __attribute__((packed));
+typedef struct ack_packet ack_packet;
+
 struct tftpc_conf {
   const char* host;
   const char* service;
@@ -102,6 +109,8 @@ tftpc_conf parse_args(int argc, char** argv);
 
 tftpc_session init_read_session(tftpc_conf* conf);
 
+tftpc_session init_write_session(tftpc_conf* conf);
+
 int tftpc_socket(tftpc_conf* conf, struct sockaddr** saptr, socklen_t* lenp);
 
 void send_packet(tftpc_session* session);
@@ -114,11 +123,17 @@ void write_file(tftpc_conf* conf);
 
 void create_rrq(tftpc_conf* conf, tftpc_session* session);
 
+void create_wrq(tftpc_conf* conf, tftpc_session* session);
+
 void create_ack(tftpc_session* session);
 
 void create_error_packet(tftpc_session* session, error_code ec, const char* msg, size_t msglen);
 
+ssize_t create_data_packet(tftpc_session* session);
+
 void process_data_packet(tftpc_session* session);
+
+void process_ack_packet(tftpc_session* session);
 
 void process_error_packet(tftpc_session* session);
 
